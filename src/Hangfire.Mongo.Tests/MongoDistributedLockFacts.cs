@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Threading;
+using System.Threading.Tasks;
 using Hangfire.Mongo.Database;
 using Hangfire.Mongo.DistributedLock;
 using Hangfire.Mongo.Dto;
@@ -10,15 +11,15 @@ using Xunit;
 
 namespace Hangfire.Mongo.Tests
 {
+#pragma warning disable 1591
 
-    [Collection("DistributedLock"), MongoSignal]
+    [Collection("Database")]
     public class MongoDistributedLockFacts
     {
-
         [Fact]
         public void Ctor_ThrowsAnException_WhenResourceIsNull()
         {
-            ConnectionUtils.UseConnection(database =>
+            UseConnection(database =>
             {
                 var exception = Assert.Throws<ArgumentNullException>(
                     () => new MongoDistributedLock(null, TimeSpan.Zero, database, new MongoStorageOptions()));
@@ -28,133 +29,79 @@ namespace Hangfire.Mongo.Tests
         }
 
         [Fact]
-        public void Ctor_ThrowsAnException_WhenResourceIsEmpty()
-        {
-            ConnectionUtils.UseConnection(database =>
-            {
-                var exception = Assert.Throws<ArgumentException>(
-                    () => new MongoDistributedLock(string.Empty, TimeSpan.Zero, database, new MongoStorageOptions()));
-
-                Assert.Equal("resource", exception.ParamName);
-            });
-        }
-
-        [Fact]
-        public void Ctor_ThrowsAnException_WhenTimeoutIsToLong()
-        {
-            ConnectionUtils.UseConnection(database =>
-            {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                var exception = Assert.Throws<ArgumentException>(
-                    () => new MongoDistributedLock(resource, TimeSpan.MaxValue, database, new MongoStorageOptions()));
-
-                Assert.Equal("timeout", exception.ParamName);
-            });
-        }
-
-        [Fact]
         public void Ctor_ThrowsAnException_WhenConnectionIsNull()
         {
-            ConnectionUtils.UseConnection(database =>
-            {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                var exception = Assert.Throws<ArgumentNullException>(
-                    () => new MongoDistributedLock(resource, TimeSpan.Zero, null, new MongoStorageOptions()));
+            var exception = Assert.Throws<ArgumentNullException>(
+                () => new MongoDistributedLock("resource1", TimeSpan.Zero, null, new MongoStorageOptions()));
 
-                Assert.Equal("database", exception.ParamName);
-            });
+            Assert.Equal("database", exception.ParamName);
         }
 
-        [Fact]
-        public void Ctor_ThrowsAnException_WhenStorageOptionsIsNull()
-        {
-            ConnectionUtils.UseConnection(database =>
-            {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                var exception = Assert.Throws<ArgumentNullException>(
-                    () => new MongoDistributedLock(resource, TimeSpan.Zero, database, null));
-
-                Assert.Equal("storageOptions", exception.ParamName);
-            });
-        }
-
-        [Fact]
+        [Fact, CleanDatabase]
         public void Ctor_SetLock_WhenResourceIsNotLocked()
         {
-            ConnectionUtils.UseConnection(database =>
+            UseConnection(database =>
             {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                using (new MongoDistributedLock(resource, TimeSpan.Zero, database, new MongoStorageOptions()))
+                using (
+                    new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions()))
                 {
-                    var filter = Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, resource);
-                    var locksCount = database.DistributedLock.Count(filter);
+                    var locksCount =
+                        database.DistributedLock.Count(Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource,
+                            "resource1"));
                     Assert.Equal(1, locksCount);
                 }
             });
         }
 
-        [Fact]
+        [Fact, CleanDatabase]
         public void Ctor_SetReleaseLock_WhenResourceIsNotLocked()
         {
-            ConnectionUtils.UseConnection(database =>
+            UseConnection(database =>
             {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                var filter = Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, resource);
-                using (new MongoDistributedLock(resource, TimeSpan.Zero, database, new MongoStorageOptions()))
+                using (new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions()))
                 {
-                    var locksCount = database.DistributedLock.Count(filter);
+                    var locksCount = database.DistributedLock.Count(Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, "resource1"));
                     Assert.Equal(1, locksCount);
                 }
 
-                var locksCountAfter = database.DistributedLock.Count(filter);
+                var locksCountAfter = database.DistributedLock.Count(Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, "resource1"));
                 Assert.Equal(0, locksCountAfter);
             });
         }
 
-        [Fact]
+        [Fact, CleanDatabase]
         public void Ctor_AcquireLockWithinSameThread_WhenResourceIsLocked()
         {
-            ConnectionUtils.UseConnection(database =>
+            UseConnection(database =>
             {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                using (new MongoDistributedLock(resource, TimeSpan.Zero, database, new MongoStorageOptions()))
+                using (new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions()))
                 {
-                    var filter = Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, resource);
-                    var locksCount = database.DistributedLock.Count(filter);
+                    var locksCount = database.DistributedLock.Count(Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, "resource1"));
                     Assert.Equal(1, locksCount);
 
-                    using (new MongoDistributedLock(resource, TimeSpan.Zero, database, new MongoStorageOptions()))
+                    using (new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions()))
                     {
-                        locksCount = database.DistributedLock.Count(filter);
+                        locksCount = database.DistributedLock.Count(Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, "resource1"));
                         Assert.Equal(1, locksCount);
                     }
                 }
             });
         }
 
-        [Fact]
+        [Fact, CleanDatabase]
         public void Ctor_ThrowsAnException_WhenResourceIsLocked()
         {
-            ConnectionUtils.UseConnection(database =>
+            UseConnection(database =>
             {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                using (new MongoDistributedLock(resource, TimeSpan.Zero, database, new MongoStorageOptions()))
+                using (new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions()))
                 {
-                    var filter = Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, resource);
-                    var locksCount = database.DistributedLock.Count(filter);
+                    var locksCount = database.DistributedLock.Count(Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, "resource1"));
                     Assert.Equal(1, locksCount);
 
                     var t = new Thread(() =>
                     {
                         Assert.Throws<DistributedLockTimeoutException>(() =>
-                                new MongoDistributedLock(resource, TimeSpan.Zero, database, new MongoStorageOptions()));
+                                new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions()));
                     });
                     t.Start();
                     Assert.True(t.Join(5000), "Thread is hanging unexpected");
@@ -162,33 +109,26 @@ namespace Hangfire.Mongo.Tests
             });
         }
 
-        [Fact]
+        [Fact, CleanDatabase]
         public void Ctor_WaitForLock_SignaledAtLockRelease()
         {
-            ConnectionUtils.UseConnection(database =>
+            UseConnection(database =>
             {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                var waitHandle = new AutoResetEvent(false);
-                var options = new MongoStorageOptions();
                 var t = new Thread(() =>
                 {
-                    using (new MongoDistributedLock(resource, TimeSpan.Zero, database, options))
+                    using (new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions()))
                     {
-                        waitHandle.Set();
                         Thread.Sleep(TimeSpan.FromSeconds(3));
                     }
                 });
                 t.Start();
 
-                // Wait for the lock to be acuired in the thread
-                // - but bail out at timeout so we do not hang forever.
-                Assert.True(waitHandle.WaitOne(TimeSpan.FromSeconds(10)), "Timed out waiting for the lock to be aqquired");
+                // Wait just a bit to make sure the above lock is acuired
+                Thread.Sleep(TimeSpan.FromSeconds(1));
 
-                var startTime = DateTime.Now; // Record when we try to acquire the lock
-
-                // Give 5 secs to acquire the lock - it should be released after 3 secs
-                using (new MongoDistributedLock(resource, TimeSpan.FromSeconds(5), database, options))
+                // Record when we try to aquire the lock
+                var startTime = DateTime.Now;
+                using (new MongoDistributedLock("resource1", TimeSpan.FromSeconds(10), database, new MongoStorageOptions()))
                 {
                     Assert.InRange(DateTime.Now - startTime, TimeSpan.Zero, TimeSpan.FromSeconds(5));
                 }
@@ -196,28 +136,41 @@ namespace Hangfire.Mongo.Tests
         }
 
         [Fact]
+        public void Ctor_ThrowsAnException_WhenOptionsIsNull()
+        {
+            UseConnection(database =>
+            {
+                var exception = Assert.Throws<ArgumentNullException>(() =>
+                    new MongoDistributedLock("resource1", TimeSpan.Zero, database, null));
+
+                Assert.Equal("storageOptions", exception.ParamName);
+            });
+        }
+
+        [Fact, CleanDatabase]
         public void Ctor_SetLockExpireAtWorks_WhenResourceIsNotLocked()
         {
-            ConnectionUtils.UseConnection(database =>
+            UseConnection(database =>
             {
-                // Make a unique resource name so we do not conflict with others
-                var resource = Guid.NewGuid().ToString();
-                var storageOption = new MongoStorageOptions
-                {
-                    DistributedLockLifetime = TimeSpan.FromSeconds(3)
-                };
-                using (new MongoDistributedLock(resource, TimeSpan.Zero, database, storageOption))
+                using (new MongoDistributedLock("resource1", TimeSpan.Zero, database, new MongoStorageOptions() { DistributedLockLifetime = TimeSpan.FromSeconds(3) }))
                 {
                     DateTime initialExpireAt = DateTime.UtcNow;
                     Thread.Sleep(TimeSpan.FromSeconds(5));
 
-                    var filter = Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, resource);
-                    DistributedLockDto lockEntry = database.DistributedLock.Find(filter).FirstOrDefault();
+                    DistributedLockDto lockEntry = database.DistributedLock.Find(Builders<DistributedLockDto>.Filter.Eq(_ => _.Resource, "resource1")).FirstOrDefault();
                     Assert.NotNull(lockEntry);
                     Assert.True(lockEntry.ExpireAt > initialExpireAt);
                 }
             });
         }
 
+        private static void UseConnection(Action<HangfireDbContext> action)
+        {
+            using (var connection = ConnectionUtils.CreateConnection())
+            {
+                action(connection);
+            }
+        }
     }
+#pragma warning restore 1591
 }

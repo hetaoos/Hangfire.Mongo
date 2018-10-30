@@ -1,16 +1,14 @@
 ﻿using System;
-using System.Linq;
 using System.Reflection;
 using System.Threading;
-using Hangfire.Mongo.Dto;
-using Hangfire.Mongo.Migration;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using Xunit.Sdk;
 
 namespace Hangfire.Mongo.Tests.Utils
 {
-    internal class CleanDatabaseAttribute : BeforeAfterTestAttribute
+#pragma warning disable 1591
+    public class CleanDatabaseAttribute : BeforeAfterTestAttribute
     {
         private static readonly object GlobalLock = new object();
 
@@ -48,40 +46,22 @@ namespace Hangfire.Mongo.Tests.Utils
 
         private static void RecreateDatabaseAndInstallObjects()
         {
-            try
+            using (var context = ConnectionUtils.CreateConnection())
             {
-                var client = new MongoClient(ConnectionUtils.GetConnectionString());
-                var database = client.GetDatabase(ConnectionUtils.GetDatabaseName());
-                var storageOptions = new MongoStorageOptions();
-                var names = MongoMigrationManager.RequiredSchemaVersion.CollectionNames(storageOptions.Prefix);
-                foreach (var name in names.Where(n => !n.EndsWith(".schema")))
+                try
                 {
-                    var collection = database.GetCollection<BsonDocument>(name);
-                    if (name.EndsWith(".signal"))
-                    {
-                        CleanSignalCollection(collection);
-                    }
-                    else
-                    {
-                        CleanCollection(collection);
-                    }
+                    context.Init(new MongoStorageOptions());
+
+                    context.DistributedLock.DeleteMany(new BsonDocument());
+                    context.JobGraph.DeleteMany(new BsonDocument());
+                    context.Server.DeleteMany(new BsonDocument());
+                }
+                catch (MongoException ex)
+                {
+                    throw new InvalidOperationException("Unable to cleanup database.", ex);
                 }
             }
-            catch (MongoException ex)
-            {
-                throw new InvalidOperationException("Unable to cleanup database.", ex);
-            }
-        }
-
-        private static void CleanSignalCollection(IMongoCollection<BsonDocument> collection)
-        {
-            var update = Builders<BsonDocument>.Update.Set(nameof(SignalDto.Signaled), false);
-            collection.UpdateMany(new BsonDocument(), update);
-        }
-
-        private static void CleanCollection(IMongoCollection<BsonDocument> collection)
-        {
-            collection.DeleteMany(new BsonDocument());
         }
     }
+#pragma warning restore 1591
 }

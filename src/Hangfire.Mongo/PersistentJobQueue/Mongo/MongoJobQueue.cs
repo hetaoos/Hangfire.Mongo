@@ -1,11 +1,8 @@
 using System;
-using System.Linq;
 using System.Threading;
 using Hangfire.Annotations;
 using Hangfire.Mongo.Database;
 using Hangfire.Mongo.Dto;
-using Hangfire.Mongo.Signal;
-using Hangfire.Mongo.Signal.Mongo;
 using Hangfire.Storage;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -15,16 +12,14 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
 #pragma warning disable 1591
     internal class MongoJobQueue : IPersistentJobQueue
     {
-        private readonly HangfireDbContext _database;
-
         private readonly MongoStorageOptions _storageOptions;
-        private readonly IPersistentSignal _signal;
 
-        public MongoJobQueue(HangfireDbContext database, MongoStorageOptions storageOptions)
+        private readonly HangfireDbContext _connection;
+
+        public MongoJobQueue(HangfireDbContext connection, MongoStorageOptions storageOptions)
         {
-            _database = database ?? throw new ArgumentNullException(nameof(database));
             _storageOptions = storageOptions ?? throw new ArgumentNullException(nameof(storageOptions));
-            _signal = new MongoSignal(database.Signal);
+            _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         }
 
         [NotNull]
@@ -64,7 +59,10 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
 
                 foreach (var queue in queues)
                 {
-                    fetchedJob = _database.JobQueue.FindOneAndUpdate(
+                    fetchedJob = _connection
+                        .JobGraph
+                        .OfType<JobQueueDto>()
+                        .FindOneAndUpdate(
                             fetchCondition & filter.Eq(_ => _.Queue, queue),
                             Builders<JobQueueDto>.Update.Set(_ => _.FetchedAt, DateTime.UtcNow),
                             options,
@@ -82,8 +80,8 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
                     {
                         // ...and we are out of fetch conditions as well.
                         // Wait for a while before polling again.
-                        var waitNames = queues.Select(q => $@"JobQueue.{q}");
-                        _signal.Wait(waitNames.ToArray(), cancellationToken);
+                        cancellationToken.WaitHandle.WaitOne(_storageOptions.QueuePollInterval);
+                        cancellationToken.ThrowIfCancellationRequested();
                     }
                 }
 
@@ -91,19 +89,19 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
                 fetchConditionsIndex = (fetchConditionsIndex + 1) % fetchConditions.Length;
             }
 
-            return new MongoFetchedJob(_database, fetchedJob.Id, fetchedJob.JobId, fetchedJob.Queue);
+            return new MongoFetchedJob(_connection, fetchedJob.Id, fetchedJob.JobId, fetchedJob.Queue);
         }
 
         public void Enqueue(string queue, string jobId)
         {
-            _database.JobQueue.InsertOne(new JobQueueDto
+            _connection.JobGraph.InsertOne(new JobQueueDto
             {
                 JobId = ObjectId.Parse(jobId),
-                Queue = queue
+                Queue = queue,
+                Id = ObjectId.GenerateNewId(),
+                FetchedAt = null
             });
-            _signal.Set($@"JobQueue.{queue}");
         }
-
     }
 #pragma warning disable 1591
 }

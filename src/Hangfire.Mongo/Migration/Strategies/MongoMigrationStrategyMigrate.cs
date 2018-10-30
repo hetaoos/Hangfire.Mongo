@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Reflection;
 using Hangfire.Mongo.Database;
+using MongoDB.Driver;
 
 namespace Hangfire.Mongo.Migration.Strategies
 {

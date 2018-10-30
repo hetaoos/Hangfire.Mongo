@@ -1,5 +1,33 @@
 
-## What's New (19/11/2017)
+## What's New (28/10/2018)
+
+### v0.5.12
+- Using $dec and $inc operators for counters
+- Merging HashDto fields into one document
+- Deprecating  direct db access and queueproviders
+- Removed use of $slice (#151) 
+
+### v0.5.11
+- Fixed duplicate key exception in advanced setups (#70)
+- Fixed DeadLock on concurrent environment (#139)
+- Update to latest Hangfire
+- Update to latest MongoDB
+
+### v0.5.10
+- Fix for Hangfire Dashboard History Graph showing incorrect counts
+- Update to latest Hangfire
+- Update to latest MongoDB
+
+### v0.5.9
+- Fix for Hangfire Dashboard History Graph showing incorrect counts
+- Added indexes to all our collections
+- Updated a few NuGet references
+- Cleaned up library references
+- Improve migration stability
+- Remove dependency to Microsoft.CSharp
+
+### v0.5.8
+- Broken release
 
 ### v0.5.7
 - Fix for broken migration
@@ -19,7 +47,7 @@
 
 ### v0.5.3
 - Added new backup database strategy when migration
-- Fixed a bug that made backup incompatible with MongoDB 3.4
+- Fixed a bug that made backup incompatiple with MongoDB 3.4
 - A few code optimizations
 
 ### v0.5.2

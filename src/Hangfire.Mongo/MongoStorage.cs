@@ -5,11 +5,8 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using Hangfire.Logging;
 using Hangfire.Mongo.Database;
-using Hangfire.Mongo.Migration;
 using Hangfire.Mongo.PersistentJobQueue;
 using Hangfire.Mongo.PersistentJobQueue.Mongo;
-using Hangfire.Mongo.Signal.Mongo;
-using Hangfire.Mongo.StateHandlers;
 using Hangfire.Server;
 using Hangfire.States;
 using Hangfire.Storage;
@@ -85,15 +82,17 @@ namespace Hangfire.Mongo
             {
                 throw new ArgumentNullException(nameof(databaseName));
             }
+            if (storageOptions == null)
+            {
+                throw new ArgumentNullException(nameof(storageOptions));
+            }
 
             _connectionString = connectionString;
             _databaseName = databaseName;
-            _storageOptions = storageOptions ?? throw new ArgumentNullException(nameof(storageOptions));
+            _storageOptions = storageOptions;
 
             Connection = new HangfireDbContext(connectionString, databaseName, storageOptions.Prefix);
-
-            var migrationManager = new MongoMigrationManager(storageOptions);
-            migrationManager.Migrate(Connection);
+            Connection.Init(_storageOptions);
 
             var defaultQueueProvider = new MongoJobQueueProvider(_storageOptions);
             QueueProviders = new PersistentJobQueueProviderCollection(defaultQueueProvider);
@@ -117,19 +116,24 @@ namespace Hangfire.Mongo
         /// <param name="storageOptions">Storage options</param>
         public MongoStorage(MongoClientSettings mongoClientSettings, string databaseName, MongoStorageOptions storageOptions)
         {
-            _mongoClientSettings = mongoClientSettings ?? throw new ArgumentNullException(nameof(mongoClientSettings));
-            _databaseName = databaseName ?? throw new ArgumentNullException(nameof(databaseName));
-            _storageOptions = storageOptions ?? throw new ArgumentNullException(nameof(storageOptions));
-
+            if (mongoClientSettings == null)
+            {
+                throw new ArgumentNullException(nameof(mongoClientSettings));
+            }
             if (string.IsNullOrWhiteSpace(databaseName))
             {
-                throw new ArgumentException("Please state a connection name", nameof(databaseName));
+                throw new ArgumentNullException(nameof(databaseName));
+            }
+            if (storageOptions == null)
+            {
+                throw new ArgumentNullException(nameof(storageOptions));
             }
 
-            Connection = new HangfireDbContext(mongoClientSettings, databaseName, _storageOptions.Prefix);
+            _mongoClientSettings = mongoClientSettings;
+            _databaseName = databaseName;
+            _storageOptions = storageOptions;
 
-            var migrationManager = new MongoMigrationManager(storageOptions);
-            migrationManager.Migrate(Connection);
+            Connection = new HangfireDbContext(mongoClientSettings, databaseName, _storageOptions.Prefix);
 
             var defaultQueueProvider = new MongoJobQueueProvider(_storageOptions);
             QueueProviders = new PersistentJobQueueProviderCollection(defaultQueueProvider);
@@ -138,11 +142,13 @@ namespace Hangfire.Mongo
         /// <summary>
         /// Database context
         /// </summary>
+        [Obsolete("We are removing access to HangfireDbContext in 0.5.13, please open an issue on our github page if you need this functionality")]
         public HangfireDbContext Connection { get; }
 
         /// <summary>
         /// Queue providers collection
         /// </summary>
+        [Obsolete("We are removing support for external queue providers in 0.5.13")]
         public PersistentJobQueueProviderCollection QueueProviders { get; }
 
         /// <summary>
@@ -169,21 +175,7 @@ namespace Hangfire.Mongo
         /// <returns>Collection of server components</returns>
         public override IEnumerable<IServerComponent> GetComponents()
         {
-            yield return new MongoSignalBackgroundProcess(this.Connection.Signal);
             yield return new ExpirationManager(this, _storageOptions.JobExpirationCheckInterval);
-            yield return new CountersAggregator(this, _storageOptions.CountersAggregateInterval);
-        }
-
-        /// <summary>
-        /// Returns collection of state handers
-        /// </summary>
-        /// <returns>Collection of state handers</returns>
-        public override IEnumerable<IStateHandler> GetStateHandlers()
-        {
-            yield return new FailedStateHandler();
-            yield return new ProcessingStateHandler();
-            yield return new SucceededStateHandler();
-            yield return new DeletedStateHandler();
         }
 
         /// <summary>
@@ -200,9 +192,12 @@ namespace Hangfire.Mongo
         /// Opens connection to database
         /// </summary>
         /// <returns>Database context</returns>
+        [Obsolete("We are removing access to HangfireDbContext in 0.5.13, please open an issue on our github page if you need this functionality")]
         public HangfireDbContext CreateAndOpenConnection()
         {
-            return _connectionString != null ? new HangfireDbContext(_connectionString, _databaseName, _storageOptions.Prefix) : new HangfireDbContext(_mongoClientSettings, _databaseName, _storageOptions.Prefix);
+            return _connectionString != null
+                ? new HangfireDbContext(_connectionString, _databaseName, _storageOptions.Prefix)
+                : new HangfireDbContext(_mongoClientSettings, _databaseName, _storageOptions.Prefix);
         }
 
         /// <summary>

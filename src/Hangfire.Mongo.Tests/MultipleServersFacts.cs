@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Linq;
 using System.Threading.Tasks;
 using Hangfire.Common;
 using Hangfire.Mongo.Tests.Utils;
@@ -7,6 +6,7 @@ using Xunit;
 
 namespace Hangfire.Mongo.Tests
 {
+#pragma warning disable 1591
     [Collection("Database")]
     public class MultipleServersFacts
     {
@@ -18,7 +18,7 @@ namespace Hangfire.Mongo.Tests
             const int workerCount = 20;
 
             var options = new BackgroundJobServerOptions[serverCount];
-            var storage = ConnectionUtils.CreateStorage(new MongoStorageOptions());
+            var storage = ConnectionUtils.CreateStorage(new MongoStorageOptions { QueuePollInterval = TimeSpan.FromSeconds(1) });
             var servers = new BackgroundJobServer[serverCount];
 
             var jobManagers = new RecurringJobManager[serverCount];
@@ -70,53 +70,6 @@ namespace Hangfire.Mongo.Tests
             }
         }
 
-
-        [Fact, CleanDatabase]
-        public void MultipleBackgroundJobServers_AddsRecurrentJobs()
-        {
-            // ARRANGE
-            const int serverCount = 15;
-            const int workerCount = 2;
-
-            JobStorage.Current = ConnectionUtils.CreateStorage(new MongoStorageOptions());
-
-            var options = Enumerable.Range(0, serverCount)
-                .Select((_, i) => new BackgroundJobServerOptions
-                {
-                    Queues = new[] { "default", $"queue_{i}" },
-                    WorkerCount = workerCount
-                })
-                .ToList();
-
-            var servers = options.Select(o => new BackgroundJobServer(o)).ToList();
-
-            // let hangfire run for 1 sec
-            Task.Delay(1000).Wait();
-
-            // ACT
-            foreach (var queue in options.SelectMany(o => o.Queues))
-            {
-                for (int i = 0; i < workerCount; i++)
-                {
-                    RecurringJob.AddOrUpdate($@"job_{queue}.{i}-a", () => Console.WriteLine($@"{queue}.{i}-a"), Cron.Minutely(), null, queue);
-                    RecurringJob.AddOrUpdate($@"job_{queue}.{i}-b", () => Console.WriteLine($@"{queue}.{i}-b"), Cron.Minutely(), null, queue);
-                }
-            }
-
-            // let hangfire run for 1 sec
-            Task.Delay(1000).Wait();
-
-            // ASSERT
-            servers.ForEach(s =>
-            {
-                s.SendStop();
-            });
-            servers.ForEach(s =>
-            {
-                s.Dispose();
-            });
-
-        }
-
     }
+#pragma warning restore 1591
 }

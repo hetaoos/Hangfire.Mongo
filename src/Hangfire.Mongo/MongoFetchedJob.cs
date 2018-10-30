@@ -12,7 +12,7 @@ namespace Hangfire.Mongo
     /// </summary>
     public sealed class MongoFetchedJob : IFetchedJob
     {
-        private readonly HangfireDbContext _database;
+        private readonly HangfireDbContext _connection;
         private readonly ObjectId _id;
 
         private bool _disposed;
@@ -24,13 +24,13 @@ namespace Hangfire.Mongo
         /// <summary>
         /// Constructs fetched job by database connection, identifier, job ID and queue
         /// </summary>
-        /// <param name="database">Database connection</param>
+        /// <param name="connection">Database connection</param>
         /// <param name="id">Identifier</param>
         /// <param name="jobId">Job ID</param>
         /// <param name="queue">Queue name</param>
-        public MongoFetchedJob(HangfireDbContext database, ObjectId id, ObjectId jobId, string queue)
+        public MongoFetchedJob(HangfireDbContext connection, ObjectId id, ObjectId jobId, string queue)
         {
-            _database = database ?? throw new ArgumentNullException(nameof(database));
+            _connection = connection ?? throw new ArgumentNullException(nameof(connection));
             _id = id;
             JobId = jobId.ToString();
             Queue = queue ?? throw new ArgumentNullException(nameof(queue));
@@ -51,8 +51,8 @@ namespace Hangfire.Mongo
         /// </summary>
         public void RemoveFromQueue()
         {
-            _database
-               .JobQueue
+            _connection
+               .JobGraph.OfType<JobQueueDto>()
                .DeleteOne(Builders<JobQueueDto>.Filter.Eq(_ => _.Id, _id));
 
             _removedFromQueue = true;
@@ -63,7 +63,7 @@ namespace Hangfire.Mongo
         /// </summary>
         public void Requeue()
         {
-            _database.JobQueue.FindOneAndUpdate(
+            _connection.JobGraph.OfType<JobQueueDto>().FindOneAndUpdate(
                 Builders<JobQueueDto>.Filter.Eq(_ => _.Id, _id),
                 Builders<JobQueueDto>.Update.Set(_ => _.FetchedAt, null));
 

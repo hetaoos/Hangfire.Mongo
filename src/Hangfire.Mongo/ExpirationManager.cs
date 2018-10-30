@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Linq.Expressions;
 using System.Threading;
 using Hangfire.Logging;
 using Hangfire.Mongo.Database;
@@ -35,7 +34,10 @@ namespace Hangfire.Mongo
         /// <param name="checkInterval">Checking interval</param>
         public ExpirationManager(MongoStorage storage, TimeSpan checkInterval)
         {
-            _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+            if (storage == null)
+                throw new ArgumentNullException(nameof(storage));
+
+            _storage = storage;
             _checkInterval = checkInterval;
         }
 
@@ -54,15 +56,17 @@ namespace Hangfire.Mongo
         /// <param name="cancellationToken">Cancellation token</param>
         public void Execute(CancellationToken cancellationToken)
         {
-            DateTime now = DateTime.UtcNow;
-
-            using (var storageConnection = (MongoConnection)_storage.GetConnection())
+            using (HangfireDbContext connection = _storage.CreateAndOpenConnection())
             {
-                var database = storageConnection.Database;
+                DateTime now = DateTime.UtcNow;
 
-                RemoveExpiredRecord(database.Job, _ => _.ExpireAt, now);
-                RemoveExpiredRecord(database.StateData.OfType<ExpiringKeyValueDto>(), _ => _.ExpireAt, now);
+                Logger.DebugFormat("Removing outdated records from table '{0}'...", connection.JobGraph.CollectionNamespace.CollectionName);
+
+                connection
+                    .JobGraph
+                    .OfType<ExpiringJobDto>().DeleteMany(Builders<ExpiringJobDto>.Filter.Lt(_ => _.ExpireAt, now));
             }
+
             cancellationToken.WaitHandle.WaitOne(_checkInterval);
         }
 
@@ -72,13 +76,6 @@ namespace Hangfire.Mongo
         public override string ToString()
         {
             return "Mongo Expiration Manager";
-        }
-
-        private static void RemoveExpiredRecord<TEntity, TField>(IMongoCollection<TEntity> collection, Expression<Func<TEntity, TField>> expression, TField now)
-        {
-            Logger.DebugFormat("Removing outdated records from table '{0}'...", collection.CollectionNamespace.CollectionName);
-
-            collection.DeleteMany(Builders<TEntity>.Filter.Lt(expression, now));
         }
     }
 }

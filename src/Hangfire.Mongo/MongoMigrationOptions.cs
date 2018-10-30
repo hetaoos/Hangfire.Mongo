@@ -119,5 +119,5 @@ namespace Hangfire.Mongo
         /// {database-name}-{schema-version}-{BackupPostfix}
         /// </remarks>
         public string BackupPostfix { get; set; }
-    }
+    }         
 }

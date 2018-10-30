@@ -3,7 +3,8 @@ using Hangfire.Mongo.Database;
 
 namespace Hangfire.Mongo.Tests.Utils
 {
-    internal static class ConnectionUtils
+#pragma warning disable 1591
+    public static class ConnectionUtils
     {
         private const string DatabaseVariable = "Hangfire_Mongo_DatabaseName";
         private const string ConnectionStringTemplateVariable = "Hangfire_Mongo_ConnectionStringTemplate";
@@ -11,12 +12,12 @@ namespace Hangfire.Mongo.Tests.Utils
         private const string DefaultDatabaseName = @"Hangfire-Mongo-Tests";
         private const string DefaultConnectionStringTemplate = @"mongodb://localhost";
 
-        internal static string GetDatabaseName()
+        public static string GetDatabaseName()
         {
             return Environment.GetEnvironmentVariable(DatabaseVariable) ?? DefaultDatabaseName;
         }
 
-        internal static string GetConnectionString()
+        public static string GetConnectionString()
         {
             return string.Format(GetConnectionStringTemplate(), GetDatabaseName());
         }
@@ -48,12 +49,6 @@ namespace Hangfire.Mongo.Tests.Utils
         {
             return CreateStorage().Connection;
         }
-
-        public static void UseConnection(Action<HangfireDbContext> action)
-        {
-            var connection = CreateConnection();
-            action(connection);
-        }
     }
-
+#pragma warning restore 1591
 }

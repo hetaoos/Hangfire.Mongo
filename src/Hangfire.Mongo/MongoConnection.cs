@@ -27,6 +27,7 @@ namespace Hangfire.Mongo
         /// Ctor using default storage options
         /// </summary>
         public MongoConnection(HangfireDbContext database, PersistentJobQueueProviderCollection queueProviders)
+
             : this(database, new MongoStorageOptions(), queueProviders)
         {
         }
@@ -46,7 +47,7 @@ namespace Hangfire.Mongo
 
         public override IWriteOnlyTransaction CreateWriteTransaction()
         {
-            return new MongoWriteOnlyTransaction(Database, _queueProviders, _storageOptions);
+            return new MongoWriteOnlyTransaction(Database, _queueProviders);
         }
 
         public override IDisposable AcquireDistributedLock(string resource, TimeSpan timeout)
@@ -54,21 +55,20 @@ namespace Hangfire.Mongo
             return new MongoDistributedLock($"Hangfire:{resource}", timeout, Database, _storageOptions);
         }
 
-        public override string CreateExpiredJob(Job job, IDictionary<string, string> parameters, DateTime createdAt, TimeSpan expireIn)
+        public override string CreateExpiredJob(Job job, IDictionary<string, string> parameters, DateTime createdAt,
+            TimeSpan expireIn)
         {
             if (job == null)
-            {
                 throw new ArgumentNullException(nameof(job));
-            }
+
             if (parameters == null)
-            {
                 throw new ArgumentNullException(nameof(parameters));
-            }
 
             var invocationData = InvocationData.Serialize(job);
 
             var jobDto = new JobDto
             {
+                Id = ObjectId.GenerateNewId(),
                 InvocationData = JobHelper.ToJson(invocationData),
                 Arguments = invocationData.Arguments,
                 Parameters = parameters.ToDictionary(kv => kv.Key, kv => kv.Value),
@@ -76,7 +76,7 @@ namespace Hangfire.Mongo
                 ExpireAt = createdAt.Add(expireIn)
             };
 
-            Database.Job.InsertOne(jobDto);
+            Database.JobGraph.InsertOne(jobDto);
 
             var jobId = jobDto.Id.ToString();
 
@@ -86,9 +86,7 @@ namespace Hangfire.Mongo
         public override IFetchedJob FetchNextJob(string[] queues, CancellationToken cancellationToken)
         {
             if (queues == null || queues.Length == 0)
-            {
                 throw new ArgumentNullException(nameof(queues));
-            }
 
             var providers = queues
                 .Select(queue => _queueProviders.GetProvider(queue))
@@ -130,7 +128,7 @@ namespace Hangfire.Mongo
 
             var update = new BsonDocument("$set", new BsonDocument($"{nameof(JobDto.Parameters)}.{name}", bsonValue));
 
-            Database.Job.FindOneAndUpdate(filter, update);
+            Database.JobGraph.OfType<JobDto>().UpdateOne(filter, update);
         }
 
         public override string GetJobParameter(string id, string name)
@@ -146,7 +144,8 @@ namespace Hangfire.Mongo
             }
 
             var parameters = Database
-                .Job
+                .JobGraph
+                .OfType<JobDto>()
                 .Find(j => j.Id == ObjectId.Parse(id))
                 .Project(job => job.Parameters)
                 .FirstOrDefault();
@@ -165,7 +164,8 @@ namespace Hangfire.Mongo
             }
 
             var jobData = Database
-                .Job
+                .JobGraph
+                .OfType<JobDto>()
                 .Find(Builders<JobDto>.Filter.Eq(_ => _.Id, ObjectId.Parse(jobId)))
                 .FirstOrDefault();
 
@@ -203,26 +203,19 @@ namespace Hangfire.Mongo
             {
                 throw new ArgumentNullException(nameof(jobId));
             }
-
-            var projection = Builders<JobDto>
-                .Projection
-                .Include(j => j.StateHistory)
-                .Slice(j => j.StateHistory, -1);
-
-            var latest = Database
-                .Job
+            
+            var job = Database
+                .JobGraph
+                .OfType<JobDto>()
                 .Find(j => j.Id == ObjectId.Parse(jobId))
-                .Project(projection)
                 .FirstOrDefault();
 
-            if (latest == null)
+            if (job == null)
             {
                 return null;
             }
 
-            var state = latest[nameof(JobDto.StateHistory)]
-                .AsBsonArray
-                .FirstOrDefault();
+            var state = job.StateHistory.LastOrDefault();
 
             if (state == null)
             {
@@ -231,10 +224,9 @@ namespace Hangfire.Mongo
 
             return new StateData
             {
-                Name = state[nameof(StateDto.Name)] == BsonNull.Value ? null : state[nameof(StateDto.Name)].AsString,
-                Reason = state[nameof(StateDto.Reason)] == BsonNull.Value ? null : state[nameof(StateDto.Reason)].AsString,
-                Data = state[nameof(StateDto.Data)] == BsonNull.Value ? new Dictionary<string, string>() :
-                    state[nameof(StateDto.Data)].AsBsonDocument.Elements.ToDictionary(e => e.Name, e => e.Value.AsString)
+                Name = state.Name,
+                Reason = state.Reason,
+                Data = state.Data
             };
         }
 
@@ -305,14 +297,14 @@ namespace Hangfire.Mongo
             }
 
             var result = Database
-                .StateData
+                .JobGraph
                 .OfType<SetDto>()
                 .Find(Builders<SetDto>.Filter.Eq(_ => _.Key, key))
                 .SortBy(_ => _.Id)
                 .Project(_ => _.Value)
                 .ToList();
 
-            return new HashSet<string>(result.Cast<string>());
+            return new HashSet<string>(result);
         }
 
         public override string GetFirstByLowestScoreFromSet(string key, double fromScore, double toScore)
@@ -328,19 +320,19 @@ namespace Hangfire.Mongo
             }
 
             return Database
-                .StateData
+                .JobGraph
                 .OfType<SetDto>()
                 .Find(Builders<SetDto>.Filter.Eq(_ => _.Key, key) &
                       Builders<SetDto>.Filter.Gte(_ => _.Score, fromScore) &
                       Builders<SetDto>.Filter.Lte(_ => _.Score, toScore))
                 .SortBy(_ => _.Score)
                 .Project(_ => _.Value)
-                .FirstOrDefault() as string;
+                .FirstOrDefault();
         }
 
         public override void SetRangeInHash(string key, IEnumerable<KeyValuePair<string, string>> keyValuePairs)
         {
-            using (var transaction = new MongoWriteOnlyTransaction(Database, _queueProviders, _storageOptions))
+            using (var transaction = new MongoWriteOnlyTransaction(Database, _queueProviders))
             {
                 transaction.SetRangeInHash(key, keyValuePairs);
                 transaction.Commit();
@@ -354,14 +346,13 @@ namespace Hangfire.Mongo
                 throw new ArgumentNullException(nameof(key));
             }
 
-            var result = Database
-                .StateData
+            var hash = Database
+                .JobGraph
                 .OfType<HashDto>()
-                .Find(Builders<HashDto>.Filter.Eq(_ => _.Key, key))
-                .ToList()
-                .ToDictionary(x => x.Field, x => (string)x.Value);
+                .Find(new BsonDocument(nameof(KeyJobDto.Key), key))
+                .FirstOrDefault();
 
-            return result.Count != 0 ? result : null;
+            return hash?.Fields;
         }
 
         public override long GetSetCount(string key)
@@ -372,7 +363,7 @@ namespace Hangfire.Mongo
             }
 
             return Database
-                .StateData
+                .JobGraph
                 .OfType<SetDto>()
                 .Find(Builders<SetDto>.Filter.Eq(_ => _.Key, key))
                 .Count();
@@ -386,13 +377,13 @@ namespace Hangfire.Mongo
             }
 
             return Database
-                .StateData
+                .JobGraph
                 .OfType<SetDto>()
                 .Find(Builders<SetDto>.Filter.Eq(_ => _.Key, key))
                 .SortBy(_ => _.Id)
                 .Skip(startingFrom)
                 .Limit(endingAt - startingFrom + 1) // inclusive -- ensure the last element is included
-                .Project(dto => (string)dto.Value)
+                .Project(dto => dto.Value)
                 .ToList();
         }
 
@@ -404,7 +395,7 @@ namespace Hangfire.Mongo
             }
 
             var values = Database
-                .StateData
+                .JobGraph
                 .OfType<SetDto>()
                 .Find(Builders<SetDto>.Filter.Eq(_ => _.Key, key) &
                       Builders<SetDto>.Filter.Not(Builders<SetDto>.Filter.Eq(_ => _.ExpireAt, null)))
@@ -421,26 +412,13 @@ namespace Hangfire.Mongo
                 throw new ArgumentNullException(nameof(key));
             }
 
-            var counterQuery = Database
-                .StateData
+            var counter = Database
+                .JobGraph
                 .OfType<CounterDto>()
-                .Find(Builders<CounterDto>.Filter.Eq(_ => _.Key, key))
-                .Project(_ => _.Value)
-                .ToList();
+                .Find(new BsonDocument(nameof(KeyJobDto.Key), key))
+                .FirstOrDefault();
 
-            var aggregatedCounterQuery = Database
-                .StateData
-                .OfType<AggregatedCounterDto>()
-                .Find(Builders<AggregatedCounterDto>.Filter.Eq(_ => _.Key, key))
-                .Project(_ => _.Value)
-                .ToList();
-
-            var values = counterQuery
-                .Concat(aggregatedCounterQuery)
-                .Select(c => (long)c)
-                .ToArray();
-
-            return values.Any() ? values.Sum() : 0;
+            return counter?.Value ?? 0;
         }
 
         public override long GetHashCount(string key)
@@ -450,11 +428,13 @@ namespace Hangfire.Mongo
                 throw new ArgumentNullException(nameof(key));
             }
 
-            return Database
-                .StateData
+            var hash = Database
+                .JobGraph
                 .OfType<HashDto>()
-                .Find(Builders<HashDto>.Filter.Eq(_ => _.Key, key))
-                .Count();
+                .Find(new BsonDocument(nameof(KeyJobDto.Key), key))
+                .FirstOrDefault();
+
+            return hash?.Fields.Count ?? 0;
         }
 
         public override TimeSpan GetHashTtl(string key)
@@ -465,7 +445,7 @@ namespace Hangfire.Mongo
             }
 
             var result = Database
-                .StateData
+                .JobGraph
                 .OfType<HashDto>()
                 .Find(Builders<HashDto>.Filter.Eq(_ => _.Key, key))
                 .SortBy(dto => dto.ExpireAt)
@@ -487,13 +467,19 @@ namespace Hangfire.Mongo
                 throw new ArgumentNullException(nameof(name));
             }
 
+            var hashWithField = new BsonDocument("$and", new BsonArray
+            {
+                new BsonDocument(nameof(KeyJobDto.Key), key),
+                new BsonDocument($"{nameof(HashDto.Fields)}.{name}", new BsonDocument("$exists", true))
+            });
+            
             var result = Database
-                .StateData
+                .JobGraph
                 .OfType<HashDto>()
-                .Find(Builders<HashDto>.Filter.Eq(_ => _.Key, key) & Builders<HashDto>.Filter.Eq(_ => _.Field, name))
+                .Find(hashWithField)
                 .FirstOrDefault();
 
-            return result?.Value as string;
+            return result?.Fields[name];
         }
 
         public override long GetListCount(string key)
@@ -504,7 +490,7 @@ namespace Hangfire.Mongo
             }
 
             return Database
-                .StateData
+                .JobGraph
                 .OfType<ListDto>()
                 .Find(Builders<ListDto>.Filter.Eq(_ => _.Key, key))
                 .Count();
@@ -518,13 +504,13 @@ namespace Hangfire.Mongo
             }
 
             var result = Database
-                .StateData
+                .JobGraph
                 .OfType<ListDto>()
                 .Find(Builders<ListDto>.Filter.Eq(_ => _.Key, key))
                 .SortBy(_ => _.ExpireAt)
                 .Project(_ => _.ExpireAt)
                 .FirstOrDefault();
-
+                
             return result.HasValue ? result.Value - DateTime.UtcNow : TimeSpan.FromSeconds(-1);
         }
 
@@ -536,13 +522,13 @@ namespace Hangfire.Mongo
             }
 
             return Database
-                .StateData
+                .JobGraph
                 .OfType<ListDto>()
                 .Find(Builders<ListDto>.Filter.Eq(_ => _.Key, key))
                 .SortByDescending(_ => _.Id)
                 .Skip(startingFrom)
                 .Limit(endingAt - startingFrom + 1) // inclusive -- ensure the last element is included
-                .Project(_ => (string)_.Value)
+                .Project(_ => _.Value)
                 .ToList();
         }
 
@@ -554,11 +540,11 @@ namespace Hangfire.Mongo
             }
 
             return Database
-                .StateData
+                .JobGraph
                 .OfType<ListDto>()
                 .Find(Builders<ListDto>.Filter.Eq(_ => _.Key, key))
                 .SortByDescending(_ => _.Id)
-                .Project(_ => (string)_.Value)
+                .Project(_ => _.Value)
                 .ToList();
         }
     }

@@ -10,16 +10,16 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
 {
     internal class MongoJobQueueMonitoringApi : IPersistentJobQueueMonitoringApi
     {
-        private readonly HangfireDbContext _database;
+        private readonly HangfireDbContext _connection;
 
-        public MongoJobQueueMonitoringApi(HangfireDbContext database)
+        public MongoJobQueueMonitoringApi(HangfireDbContext connection)
         {
-            _database = database ?? throw new ArgumentNullException(nameof(database));
+            _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         }
 
         public IEnumerable<string> GetQueues()
         {
-            return _database.JobQueue
+            return _connection.JobGraph.OfType<JobQueueDto>()
                 .Find(new BsonDocument())
                 .Project(_ => _.Queue)
                 .ToList().Distinct().ToList();
@@ -27,7 +27,7 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
 
         public IEnumerable<string> GetEnqueuedJobIds(string queue, int from, int perPage)
         {
-            return _database.JobQueue
+            return _connection.JobGraph.OfType<JobQueueDto>()
                 .Find(Builders<JobQueueDto>.Filter.Eq(_ => _.Queue, queue) & Builders<JobQueueDto>.Filter.Eq(_ => _.FetchedAt, null))
                 .Skip(from)
                 .Limit(perPage)
@@ -35,7 +35,7 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
                 .ToList()
                 .Where(jobQueueJobId =>
                 {
-                    return _database.Job.Find(j => j.Id == jobQueueJobId && j.StateHistory.Length > 0).Any();
+                    return _connection.JobGraph.OfType<JobDto>().Find(j => j.Id == jobQueueJobId && j.StateHistory.Length > 0).Any();
                 })
                 .Select(jobQueueJobId => jobQueueJobId.ToString())
                 .ToArray();
@@ -43,7 +43,7 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
 
         public IEnumerable<string> GetFetchedJobIds(string queue, int from, int perPage)
         {
-            return _database.JobQueue
+            return _connection.JobGraph.OfType<JobQueueDto>()
                 .Find(Builders<JobQueueDto>.Filter.Eq(_ => _.Queue, queue) & Builders<JobQueueDto>.Filter.Ne(_ => _.FetchedAt, null))
                 .Skip(from)
                 .Limit(perPage)
@@ -51,7 +51,7 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
                 .ToList()
                 .Where(jobQueueJobId =>
                 {
-                    var job = _database.Job.Find(Builders<JobDto>.Filter.Eq(_ => _.Id, jobQueueJobId)).FirstOrDefault();
+                    var job = _connection.JobGraph.OfType<JobDto>().Find(Builders<JobDto>.Filter.Eq(_ => _.Id, jobQueueJobId)).FirstOrDefault();
                     return job != null;
                 })
                 .Select(jobQueueJobId => jobQueueJobId.ToString())
@@ -60,10 +60,10 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
 
         public EnqueuedAndFetchedCountDto GetEnqueuedAndFetchedCount(string queue)
         {
-            int enqueuedCount = (int)_database.JobQueue.Count(Builders<JobQueueDto>.Filter.Eq(_ => _.Queue, queue) &
+            int enqueuedCount = (int)_connection.JobGraph.OfType<JobQueueDto>().Count(Builders<JobQueueDto>.Filter.Eq(_ => _.Queue, queue) &
                                                 Builders<JobQueueDto>.Filter.Eq(_ => _.FetchedAt, null));
 
-            int fetchedCount = (int)_database.JobQueue.Count(Builders<JobQueueDto>.Filter.Eq(_ => _.Queue, queue) &
+            int fetchedCount = (int)_connection.JobGraph.OfType<JobQueueDto>().Count(Builders<JobQueueDto>.Filter.Eq(_ => _.Queue, queue) &
                                                 Builders<JobQueueDto>.Filter.Ne(_ => _.FetchedAt, null));
 
             return new EnqueuedAndFetchedCountDto

@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using Hangfire.Common;
@@ -9,6 +8,7 @@ using Hangfire.Mongo.Dto;
 using Hangfire.Mongo.PersistentJobQueue;
 using Hangfire.Mongo.Tests.Utils;
 using Hangfire.Server;
+using Hangfire.States;
 using Hangfire.Storage;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -17,33 +17,33 @@ using Xunit;
 
 namespace Hangfire.Mongo.Tests
 {
+#pragma warning disable 1591
     [Collection("Database")]
     public class MongoConnectionFacts
     {
         private readonly Mock<IPersistentJobQueue> _queue;
-        private readonly Mock<IPersistentJobQueueProvider> _provider;
         private readonly PersistentJobQueueProviderCollection _providers;
 
         public MongoConnectionFacts()
         {
             _queue = new Mock<IPersistentJobQueue>();
 
-            _provider = new Mock<IPersistentJobQueueProvider>();
-            _provider.Setup(x => x.GetJobQueue(It.IsNotNull<HangfireDbContext>())).Returns(_queue.Object);
+            var provider = new Mock<IPersistentJobQueueProvider>();
+            provider.Setup(x => x.GetJobQueue(It.IsNotNull<HangfireDbContext>())).Returns(_queue.Object);
 
-            _providers = new PersistentJobQueueProviderCollection(_provider.Object);
+            _providers = new PersistentJobQueueProviderCollection(provider.Object);
         }
 
         [Fact]
         public void Ctor_ThrowsAnException_WhenConnectionIsNull()
         {
             var exception = Assert.Throws<ArgumentNullException>(
-                () => new MongoConnection(null, null));
+                () => new MongoConnection(null, _providers));
 
             Assert.Equal("database", exception.ParamName);
         }
 
-        [Fact]
+        [Fact, CleanDatabase]
         public void Ctor_ThrowsAnException_WhenProvidersCollectionIsNull()
         {
             var exception = Assert.Throws<ArgumentNullException>(
@@ -123,7 +123,7 @@ namespace Hangfire.Mongo.Tests
             {
                 var exception = Assert.Throws<ArgumentNullException>(
                     () => connection.CreateExpiredJob(
-                        Job.FromExpression(() => SampleMethod("hello")),
+                        Job.FromExpression(() => HangfireTestJobs.SampleMethod("hello")),
                         null,
                         DateTime.UtcNow,
                         TimeSpan.Zero));
@@ -139,7 +139,7 @@ namespace Hangfire.Mongo.Tests
             {
                 var createdAt = new DateTime(2012, 12, 12, 0, 0, 0, 0, DateTimeKind.Utc);
                 var jobId = connection.CreateExpiredJob(
-                    Job.FromExpression(() => SampleMethod("Hello")),
+                    Job.FromExpression(() => HangfireTestJobs.SampleMethod("Hello")),
                     new Dictionary<string, string> { { "Key1", "Value1" }, { "Key2", "Value2" } },
                     createdAt,
                     TimeSpan.FromDays(1));
@@ -147,24 +147,24 @@ namespace Hangfire.Mongo.Tests
                 Assert.NotNull(jobId);
                 Assert.NotEmpty(jobId);
 
-                var databaseJob = database.Job.Find(new BsonDocument()).ToList().Single();
+                var databaseJob = database.JobGraph.OfType<JobDto>().Find(new BsonDocument()).ToList().Single();
                 Assert.Equal(jobId, databaseJob.Id.ToString());
                 Assert.Equal(createdAt, databaseJob.CreatedAt);
-                Assert.Equal(null, databaseJob.StateName);
+                Assert.Null(databaseJob.StateName);
 
                 var invocationData = JobHelper.FromJson<InvocationData>(databaseJob.InvocationData);
                 invocationData.Arguments = databaseJob.Arguments;
 
                 var job = invocationData.Deserialize();
-                Assert.Equal(typeof(MongoConnectionFacts), job.Type);
-                Assert.Equal("SampleMethod", job.Method.Name);
+                Assert.Equal(typeof(HangfireTestJobs), job.Type);
+                Assert.Equal(nameof(HangfireTestJobs.SampleMethod), job.Method.Name);
                 Assert.Equal("Hello", job.Args[0]);
 
                 Assert.True(createdAt.AddDays(1).AddMinutes(-1) < databaseJob.ExpireAt);
                 Assert.True(databaseJob.ExpireAt < createdAt.AddDays(1).AddMinutes(1));
 
                 var parameters = database
-                    .Job
+                    .JobGraph.OfType<JobDto>()
                     .Find(Builders<JobDto>.Filter.Eq(_ => _.Id, ObjectId.Parse(jobId)))
                     .Project(j => j.Parameters)
                     .ToList()
@@ -199,23 +199,23 @@ namespace Hangfire.Mongo.Tests
         {
             UseConnection((database, connection) =>
             {
-                var job = Job.FromExpression(() => SampleMethod("wrong"));
+                var job = Job.FromExpression(() => HangfireTestJobs.SampleMethod("wrong"));
 
                 var jobDto = new JobDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     InvocationData = JobHelper.ToJson(InvocationData.Serialize(job)),
                     Arguments = "[\"\\\"Arguments\\\"\"]",
-                    StateName = "Succeeded",
+                    StateName = SucceededState.StateName,
                     CreatedAt = DateTime.UtcNow
                 };
-                database.Job.InsertOne(jobDto);
+                database.JobGraph.InsertOne(jobDto);
 
                 var result = connection.GetJobData(jobDto.Id.ToString());
 
                 Assert.NotNull(result);
                 Assert.NotNull(result.Job);
-                Assert.Equal("Succeeded", result.State);
+                Assert.Equal(SucceededState.StateName, result.State);
                 Assert.Equal("Arguments", result.Job.Args[0]);
                 Assert.Null(result.LoadException);
                 Assert.True(DateTime.UtcNow.AddMinutes(-1) < result.CreatedAt);
@@ -266,7 +266,7 @@ namespace Hangfire.Mongo.Tests
                     StateHistory = new[] { state }
                 };
 
-                database.Job.InsertOne(jobDto);
+                database.JobGraph.InsertOne(jobDto);
                 var jobId = jobDto.Id;
 
                 var update = Builders<JobDto>
@@ -280,7 +280,7 @@ namespace Hangfire.Mongo.Tests
                         CreatedAt = DateTime.UtcNow
                     });
 
-                database.Job.UpdateOne(j => j.Id == jobId, update);
+                database.JobGraph.OfType<JobDto>().UpdateOne(j => j.Id == jobId, update);
 
                 var result = connection.GetStateData(jobId.ToString());
                 Assert.NotNull(result);
@@ -301,10 +301,10 @@ namespace Hangfire.Mongo.Tests
                     Id = ObjectId.GenerateNewId(),
                     InvocationData = JobHelper.ToJson(new InvocationData(null, null, null, null)),
                     Arguments = "[\"\\\"Arguments\\\"\"]",
-                    StateName = "Succeeded",
+                    StateName = SucceededState.StateName,
                     CreatedAt = DateTime.UtcNow
                 };
-                database.Job.InsertOne(jobDto);
+                database.JobGraph.InsertOne(jobDto);
                 var jobId = jobDto.Id;
 
                 var result = connection.GetJobData(jobId.ToString());
@@ -349,13 +349,13 @@ namespace Hangfire.Mongo.Tests
                     Arguments = "",
                     CreatedAt = DateTime.UtcNow
                 };
-                database.Job.InsertOne(jobDto);
+                database.JobGraph.InsertOne(jobDto);
                 var jobId = jobDto.Id;
 
                 connection.SetJobParameter(jobId.ToString(), "Name", "Value");
 
                 var parameters = database
-                    .Job
+                    .JobGraph.OfType<JobDto>()
                     .Find(j => j.Id == jobId)
                     .Project(j => j.Parameters)
                     .FirstOrDefault();
@@ -377,14 +377,14 @@ namespace Hangfire.Mongo.Tests
                     Arguments = "",
                     CreatedAt = DateTime.UtcNow
                 };
-                database.Job.InsertOne(jobDto);
+                database.JobGraph.InsertOne(jobDto);
                 var jobId = jobDto.Id;
 
                 connection.SetJobParameter(jobId.ToString(), "Name", "Value");
                 connection.SetJobParameter(jobId.ToString(), "Name", "AnotherValue");
 
                 var parameters = database
-                    .Job
+                    .JobGraph.OfType<JobDto>()
                     .Find(j => j.Id == jobId)
                     .Project(j => j.Parameters)
                     .FirstOrDefault();
@@ -406,19 +406,19 @@ namespace Hangfire.Mongo.Tests
                     Arguments = "",
                     CreatedAt = DateTime.UtcNow
                 };
-                database.Job.InsertOne(jobDto);
+                database.JobGraph.InsertOne(jobDto);
                 var jobId = jobDto.Id;
 
                 connection.SetJobParameter(jobId.ToString(), "Name", null);
 
                 var parameters = database
-                    .Job
+                    .JobGraph.OfType<JobDto>()
                     .Find(j => j.Id == jobId)
                     .Project(j => j.Parameters)
                     .FirstOrDefault();
 
                 Assert.NotNull(parameters);
-                Assert.Equal(null, parameters["Name"]);
+                Assert.Null(parameters["Name"]);
             });
         }
 
@@ -468,8 +468,8 @@ namespace Hangfire.Mongo.Tests
                     Arguments = "",
                     CreatedAt = DateTime.UtcNow
                 };
-                database.Job.InsertOne(jobDto);
-                
+                database.JobGraph.InsertOne(jobDto);
+
 
                 connection.SetJobParameter(jobDto.Id.ToString(), "name", "value");
 
@@ -515,28 +515,28 @@ namespace Hangfire.Mongo.Tests
         {
             UseConnection((database, connection) =>
             {
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "key",
                     Score = 1.0,
                     Value = "1.0"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "key",
                     Score = -1.0,
                     Value = "-1.0"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "key",
                     Score = -5.0,
                     Value = "-5.0"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "another-key",
@@ -666,6 +666,8 @@ namespace Hangfire.Mongo.Tests
                 var servers = database.Server.Find(new BsonDocument()).ToList()
                     .ToDictionary(x => x.Id, x => x.LastHeartbeat);
 
+                Assert.True(servers.ContainsKey("server1"));
+                Assert.True(servers.ContainsKey("server2"));
                 Assert.NotEqual(2012, servers["server1"].Value.Year);
                 Assert.Equal(2012, servers["server2"].Value.Year);
             });
@@ -718,7 +720,7 @@ namespace Hangfire.Mongo.Tests
                 var result = connection.GetAllItemsFromSet("some-set");
 
                 Assert.NotNull(result);
-                Assert.Equal(0, result.Count);
+                Assert.Empty(result);
             });
         }
 
@@ -728,42 +730,42 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "some-set",
                     Score = 0.0,
                     Value = "1"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "some-set",
                     Score = 0.0,
                     Value = "2"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "another-set",
                     Score = 0.0,
                     Value = "3"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "some-set",
                     Score = 0.0,
                     Value = "4"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "some-set",
                     Score = 0.0,
                     Value = "5"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "some-set",
@@ -816,8 +818,10 @@ namespace Hangfire.Mongo.Tests
                             { "Key2", "Value2" }
                         });
 
-                var result = database.StateData.OfType<HashDto>().Find(Builders<HashDto>.Filter.Eq(_ => _.Key, "some-hash")).ToList()
-                    .ToDictionary(x => x.Field, x => x.Value);
+                var result = database.JobGraph.OfType<HashDto>()
+                    .Find(Builders<HashDto>.Filter.Eq(_ => _.Key, "some-hash"))
+                    .First()
+                    .Fields;
 
                 Assert.Equal("Value1", result["Key1"]);
                 Assert.Equal("Value2", result["Key2"]);
@@ -847,26 +851,24 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "some-hash",
-                    Field = "Key1",
-                    Value = "Value1"
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["Key1"] = "Value1",
+                        ["Key2"] = "Value2",
+                    },
                 });
-                database.StateData.InsertOne(new HashDto
-                {
-                    Id = ObjectId.GenerateNewId(),
-                    Key = "some-hash",
-                    Field = "Key2",
-                    Value = "Value2"
-                });
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "another-hash",
-                    Field = "Key3",
-                    Value = "Value3"
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["Key3"] = "Value3"
+                    },
                 });
 
                 // Act
@@ -905,19 +907,19 @@ namespace Hangfire.Mongo.Tests
         {
             UseConnection((database, connection) =>
             {
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
                     Value = "value-1"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-2",
                     Value = "value-1"
                 });
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
@@ -944,7 +946,7 @@ namespace Hangfire.Mongo.Tests
         {
             UseConnection((database, connection) =>
             {
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
@@ -952,7 +954,7 @@ namespace Hangfire.Mongo.Tests
                     Score = 0.0
                 });
 
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
@@ -960,7 +962,7 @@ namespace Hangfire.Mongo.Tests
                     Score = 0.0
                 });
 
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
@@ -968,7 +970,7 @@ namespace Hangfire.Mongo.Tests
                     Score = 0.0
                 });
 
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
@@ -976,7 +978,7 @@ namespace Hangfire.Mongo.Tests
                     Score = 0.0
                 });
 
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-2",
@@ -984,7 +986,7 @@ namespace Hangfire.Mongo.Tests
                     Score = 0.0
                 });
 
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
@@ -1023,7 +1025,7 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-1",
@@ -1032,7 +1034,7 @@ namespace Hangfire.Mongo.Tests
                     ExpireAt = DateTime.UtcNow.AddMinutes(60)
                 });
 
-                database.StateData.InsertOne(new SetDto
+                database.JobGraph.InsertOne(new SetDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "set-2",
@@ -1076,56 +1078,24 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new CounterDto
+                database.JobGraph.InsertOne(new CounterDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "counter-1",
-                    Value = 1L
+                    Value = 2L
                 });
-                database.StateData.InsertOne(new CounterDto
+                database.JobGraph.InsertOne(new CounterDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "counter-2",
                     Value = 1L
                 });
-                database.StateData.InsertOne(new CounterDto
-                {
-                    Id = ObjectId.GenerateNewId(),
-                    Key = "counter-1",
-                    Value = 1L
-                });
-
+                
                 // Act
                 var result = connection.GetCounter("counter-1");
 
                 // Assert
                 Assert.Equal(2, result);
-            });
-        }
-
-        [Fact, CleanDatabase]
-        public void GetCounter_IncludesValues_FromCounterAggregateTable()
-        {
-            UseConnection((database, connection) =>
-            {
-                // Arrange
-                database.StateData.InsertOne(new AggregatedCounterDto
-                {
-                    Id = ObjectId.GenerateNewId(),
-                    Key = "counter-1",
-                    Value = 12L
-                });
-                database.StateData.InsertOne(new AggregatedCounterDto
-                {
-                    Id = ObjectId.GenerateNewId(),
-                    Key = "counter-2",
-                    Value = 15L
-                });
-
-                // Act
-                var result = connection.GetCounter("counter-1");
-
-                Assert.Equal(12, result);
             });
         }
 
@@ -1154,23 +1124,26 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["field-1"] = "field-1-value",
+                        ["field-2"] = "field-2-value",
+                        
+                    },
                     Key = "hash-1",
-                    Field = "field-1"
                 });
-                database.StateData.InsertOne(new HashDto
-                {
-                    Id = ObjectId.GenerateNewId(),
-                    Key = "hash-1",
-                    Field = "field-2"
-                });
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "hash-2",
-                    Field = "field-1"
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["field-1"] = "field-1-value",
+                        
+                    },
                 });
 
                 // Act
@@ -1207,18 +1180,26 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "hash-1",
-                    Field = "field",
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["field-1"] = "field-1-value",
+                        
+                    },
                     ExpireAt = DateTime.UtcNow.AddHours(1)
                 });
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "hash-2",
-                    Field = "field",
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["field-1"] = "field-1-value",
+                        
+                    },
                     ExpireAt = null
                 });
 
@@ -1271,26 +1252,24 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "hash-1",
-                    Field = "field-1",
-                    Value = "1"
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["field-1"] = "1",
+                        ["field-2"] = "2",
+                    },
                 });
-                database.StateData.InsertOne(new HashDto
-                {
-                    Id = ObjectId.GenerateNewId(),
-                    Key = "hash-1",
-                    Field = "field-2",
-                    Value = "2"
-                });
-                database.StateData.InsertOne(new HashDto
+                database.JobGraph.InsertOne(new HashDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "hash-2",
-                    Field = "field-1",
-                    Value = "3"
+                    Fields = new Dictionary<string, string>
+                    {
+                        ["field-1"] = "2"
+                    },
                 });
 
                 // Act
@@ -1327,17 +1306,17 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-2",
@@ -1377,13 +1356,13 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                     ExpireAt = DateTime.UtcNow.AddHours(1)
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-2",
@@ -1427,31 +1406,31 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                     Value = "1"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-2",
                     Value = "2"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                     Value = "3"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                     Value = "4"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
@@ -1505,7 +1484,7 @@ namespace Hangfire.Mongo.Tests
                         Value = "5"
                     }
                 };
-                database.StateData.InsertMany(listDtos);
+                database.JobGraph.InsertMany(listDtos);
 
                 // Act
                 var result = connection.GetRangeFromList("list-1", 1, 5);
@@ -1541,31 +1520,31 @@ namespace Hangfire.Mongo.Tests
             UseConnection((database, connection) =>
             {
                 // Arrange
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                     Value = "1"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-2",
                     Value = "2"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                     Value = "3"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
                     Value = "4"
                 });
-                database.StateData.InsertOne(new ListDto
+                database.JobGraph.InsertOne(new ListDto
                 {
                     Id = ObjectId.GenerateNewId(),
                     Key = "list-1",
@@ -1582,16 +1561,16 @@ namespace Hangfire.Mongo.Tests
 
         private void UseConnection(Action<HangfireDbContext, MongoConnection> action)
         {
-            var database = ConnectionUtils.CreateConnection();
-            using (var connection = new MongoConnection(database, _providers))
+            using (var database = ConnectionUtils.CreateConnection())
             {
-                action(database, connection);
+                using (var connection = new MongoConnection(database, _providers))
+                {
+                    action(database, connection);
+                }
             }
         }
 
-        public static void SampleMethod(string arg)
-        {
-            Debug.WriteLine(arg);
-        }
     }
+
+#pragma warning restore 1591
 }

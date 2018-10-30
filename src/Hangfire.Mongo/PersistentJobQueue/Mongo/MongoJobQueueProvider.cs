@@ -10,17 +10,22 @@ namespace Hangfire.Mongo.PersistentJobQueue.Mongo
 
         public MongoJobQueueProvider(MongoStorageOptions storageOptions)
         {
-            _storageOptions = storageOptions ?? throw new ArgumentNullException(nameof(storageOptions));
+            if (storageOptions == null)
+            {
+                throw new ArgumentNullException(nameof(storageOptions));
+            }
+
+            _storageOptions = storageOptions;
         }
 
-        public IPersistentJobQueue GetJobQueue(HangfireDbContext database)
+        public IPersistentJobQueue GetJobQueue(HangfireDbContext connection)
         {
-            return new MongoJobQueue(database, _storageOptions);
+            return new MongoJobQueue(connection, _storageOptions);
         }
 
-        public IPersistentJobQueueMonitoringApi GetJobQueueMonitoringApi(HangfireDbContext database)
+        public IPersistentJobQueueMonitoringApi GetJobQueueMonitoringApi(HangfireDbContext connection)
         {
-            return new MongoJobQueueMonitoringApi(database);
+            return new MongoJobQueueMonitoringApi(connection);
         }
     }
 #pragma warning restore 1591
